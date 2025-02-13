@@ -1,3 +1,4 @@
+import subprocess
 import torch
 import os
 from tqdm import tqdm
@@ -151,12 +152,38 @@ def extract_identifiers(java_code):
 
     return '\n'.join(identifiers)
 
+def method_to_signature(m_name, m_dict):
+    signature = m_name
+    signature = signature.replace(' ', '')
+    signature = signature.replace('$', '.')
+    if '<init>' in signature:
+        class_name = signature.split('@')[0].split('.')[-1]
+        signature = signature.replace('@<init>', '.'+class_name)
+    else:
+        signature = signature.replace('@', '.', 1)
+    if signature not in m_dict.keys():
+        params = signature.split('(')[1].split(')')[0]
+        if len(params) != 0:
+            list_p = params.split(',')
+            new_p = []
+            for p in list_p:
+                new_p.append(p.split('.')[-1])
+            signature = signature.split('(')[0]+'('+','.join(new_p)+')'
+    return signature
+
+
+def format_code(code):
+    astyle_path = 'C:\\Users\\COINSE\\Downloads\\astyle-3.6.6-x64\\astyle-3.6.6-x64\\astyle.exe'
+    result = subprocess.run([astyle_path], input=code, capture_output=True, text=True)
+    return result.stdout
+
 # main process
 # blocked code for identifier
 from sentence_transformers import SentenceTransformer, losses, InputExample, SentenceTransformerTrainer, SentenceTransformerTrainingArguments
 model = SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remote_code=True)
 model.max_seq_length = 8192
 model.eval()
+uncovered_collage = []
 for project_name in tqdm(list_project):
     if project_name == 'Math_38' or project_name == 'Math_6':
         continue
@@ -298,36 +325,119 @@ for project_name in tqdm(list_project):
     for mutant_no in mutants:
         if 'snippet' not in mutants[mutant_no].keys():
             continue
-        #id_code = extract_identifiers(mutants[mutant_no]['snippet'])
-        #embedding = model.encode(id_code)
-        embedding = model.encode(mutants[mutant_no]['snippet'])
+        code = mutants[mutant_no]['snippet']
+        code = format_code(code)
+        embedding = model.encode(code)
         tag = 'b' if mutants[mutant_no]['killer'] else 'nb'
         mutant_embedding[mutant_no] = {
             'method_name': mutants[mutant_no]['method_name'],
             'killer': mutants[mutant_no]['killer'],
             'embedding': embedding,
-            'tag' : tag
-        }
-    for m in method:
-        last_id += 1
-        ms = m['signature']
-        #id_code = extract_identifiers(m['snippet'])
-        #embedding = model.encode(id_code)
-        embedding = model.encode(m['snippet'])
-        mutant_embedding[str(last_id)] = {
-            'method_name' : ms,
-            'killer' : [],
-            'embedding' : embedding,
-            'tag': 'nc'
+            'tag' : tag,
+            'snippet': mutants[mutant_no]['snippet']
         }
     with open('mutant_data_new.pkl', 'wb') as mf:
         pickle.dump(mutant_embedding, mf)
+    fix_method_embedding = {}
+    for m in method:
+        last_id += 1
+        ms = m['signature']
+        code = m['snippet']
+        code = format_code(code)
+        embedding = model.encode(code)
+        fix_method_embedding[str(last_id)] = {
+            'method_name' : ms,
+            'killer' : [],
+            'embedding' : embedding,
+            'tag': 'nc',
+            'snippet': m['snippet']
+        }
+    with open('method_data_new.pkl', 'wb') as mef:
+        pickle.dump(fix_method_embedding, mef)
     test_embedding = {}
     for test in ALL_TESTS_CODING:
-        #id_code = extract_identifiers(ALL_TESTS_CODING[test])
-        #embedding = model.encode(id_code)
-        embedding = model.encode(ALL_TESTS_CODING[test])
+        code = ALL_TESTS_CODING[test]
+        code = format_code(code)
+        embedding = model.encode(code)
         test_embedding[test] = embedding
-    with open('test_data.pkl', 'wb') as tf:
+    with open('test_data_new.pkl', 'wb') as tf:
         pickle.dump(test_embedding, tf)
     os.chdir(cur)
+    method_snip = json.load(open(f'd4j_data/{project_name}/snippet.json'))
+    test_method = json.load(open(f'd4j_data/{project_name}/test_snippet.json'))
+    os.chdir(f'd4j_data/{project_name}')
+    truncated_test = []
+    for entry in test_method:
+        testcode = entry['snippet']
+        labels = []
+        if len(entry['child_classes'])>0:
+            for child in entry['child_classes']:
+                alt_test_name = child+ '.'+entry['signature'].split('.')[-1]
+                labels.append(alt_test_name)
+        labels.append(entry['signature'])
+        truncated_test.append((testcode, labels))
+    FAILING_TESTS_CODING = {}
+    for test in FAILING_TESTS:
+        for entry in truncated_test:
+            testcode = entry[0]
+            test_name = entry[1]
+            test_name = [convert_signature(x) for x in test_name]
+            if test in test_name[-1]:
+                FAILING_TESTS_CODING[test] = testcode
+                break
+            else:
+                test_name = [x.split('(')[0] for x in test_name]
+                if test in test_name:
+                    FAILING_TESTS_CODING[test] = testcode
+    last_class = []
+    method_dict = {}
+    for m in method_snip:
+        ms = m['signature']
+        cs = m['class_name']
+        signature_key = ms.replace(' ', '')
+        if 'Anonymous' in signature_key:
+            an_identifier = signature_key.split('(')[0].split('.')[-2]
+            last_class.append(signature_key.replace(an_identifier, ''))
+            c_id = last_class.count(signature_key.replace(an_identifier, ''))
+            signature_key = signature_key.replace(an_identifier, str(c_id))
+        if cs not in ms:
+            if '.' not in str(ms.split('(')[0]):
+                signature_key = cs+'.'+signature_key
+        method_dict[signature_key] = m
+    COVERED_METHODS_CODING = {}
+    UNCOVERED_METHODS = []
+    SCORE = {}
+    for method in COVERED_METHODS:
+        signature = method_to_signature(method, method_dict)
+        if signature in method_dict:
+            method_ = method_dict[signature]
+            snippet = method_['snippet']
+            COVERED_METHODS_CODING[signature] = snippet
+            SCORE[signature] = []
+        else:
+            UNCOVERED_METHODS.append(method)
+    uncovered_collage.extend(UNCOVERED_METHODS)
+    COVERED_METHODS = [x for x in COVERED_METHODS if x not in UNCOVERED_METHODS]
+    covered_method_embedding = {}
+    for method_signature in COVERED_METHODS_CODING:
+        code = COVERED_METHODS_CODING[method_signature]
+        code = format_code(code)
+        embedding = model.encode(code)
+        covered_method_embedding[method_signature] = {
+            'embedding': embedding
+        }
+    with open('buggy_method_data.pkl', 'wb') as bmef:
+        pickle.dump(covered_method_embedding, bmef)
+    failing_test_embedding = {}
+    for test in FAILING_TESTS_CODING:
+        code = FAILING_TESTS_CODING[test]
+        code = format_code(code)
+        embedding = model.encode(code)
+        failing_test_embedding[test] = {
+            'embedding': embedding
+        }
+    with open('failing_test_data.pkl', 'wb') as ftf:
+        pickle.dump(failing_test_embedding, ftf)
+    os.chdir(cur)
+    
+
