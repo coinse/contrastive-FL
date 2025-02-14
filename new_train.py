@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pickle
 import random
+import sys
 
 # %%
 #project to be evaluated
@@ -44,6 +45,7 @@ batches = []
 x = 0
 mn = float('inf')
 mx = 0
+flag = True
 for project_name in list_project:
     if project_name == 'Math_38' or project_name == 'Math_6':
         continue
@@ -84,6 +86,9 @@ for project_name in list_project:
                     mx = len(dp)
                 if len(dp)<mn:
                     mn = len(dp)
+                if flag:
+                    print(sys.getsizeof(dp))
+                    flag = False
 print(len(batches))
 print(x / len(batches))
 print(mn, mx)
@@ -92,6 +97,7 @@ print(mn, mx)
 from version_batch_modelloss import ContrastiveModel, ContrastiveLoss
 from torch.utils.data import DataLoader, Dataset, Sampler
 import matplotlib.pyplot as plt
+torch.cuda.empty_cache()
 
 # %%
 class PrecomputedBatchDataset(Dataset):
@@ -105,15 +111,17 @@ class PrecomputedBatchDataset(Dataset):
         return self.batches[idx]  # Return batch directly
 def collate_fn(batch):
     """Optimized collate function for DataLoader"""
-    method_batch = torch.stack([torch.from_numpy(x[0]) for x in batch], dim=0)
-    test_batch = torch.stack([torch.from_numpy(x[1]) for x in batch], dim=0)
-    label = torch.tensor([x[2] for x in batch], dtype=torch.float)
+
+    method_batch = torch.stack([torch.from_numpy(x[0]) for x in batch[0]], dim=0)
+    test_batch = torch.stack([torch.from_numpy(x[1]) for x in batch[0]], dim=0)
+    label = torch.tensor([x[2] for x in batch[0]], dtype=torch.float)
     
     return method_batch.pin_memory(), test_batch.pin_memory(), label.pin_memory()
 
 
 dataset = PrecomputedBatchDataset(batches)
-dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=4, persistent_workers=True, pin_memory=True, collate_fn=collate_fn)
+#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=4, persistent_workers=True, pin_memory=True, collate_fn=collate_fn)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
 
 
 # %%
@@ -172,6 +180,7 @@ best_val_loss = float('inf')
 loss_list = []
 positive_loss_list = []
 negative_loss_list = []
+print('training start')
 for epoch in range(num_epoch):
     epoch_loss = 0.0
     positive_epoch_loss = 0.0
