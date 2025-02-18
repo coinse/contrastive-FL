@@ -93,6 +93,11 @@ print(len(batches))
 print(x / len(batches))
 print(mn, mx)
 
+for i in range(len(batches)):
+    batches[i] = (torch.from_numpy(batches[i][0]), 
+                  torch.from_numpy(batches[i][1]), 
+                  torch.tensor(batches[i][2], dtype=torch.float))
+
 # %%
 from version_batch_modelloss import ContrastiveModel, ContrastiveLoss
 from torch.utils.data import DataLoader, Dataset, Sampler
@@ -111,17 +116,24 @@ class PrecomputedBatchDataset(Dataset):
         return self.batches[idx]  # Return batch directly
 def collate_fn(batch):
     """Optimized collate function for DataLoader"""
-
-    method_batch = torch.stack([torch.from_numpy(x[0]) for x in batch[0]], dim=0)
-    test_batch = torch.stack([torch.from_numpy(x[1]) for x in batch[0]], dim=0)
-    label = torch.tensor([x[2] for x in batch[0]], dtype=torch.float)
-    
-    return method_batch.pin_memory(), test_batch.pin_memory(), label.pin_memory()
-
+    # conversion process removed from collate_fn
+    method_batch = torch.stack([x[0] for x in batch[0]], dim=0)
+    test_batch = torch.stack([x[1] for x in batch[0]], dim=0)
+    label = torch.stack([x[2] for x in batch[0]], dim=0)
+    return method_batch, test_batch, label
 
 dataset = PrecomputedBatchDataset(batches)
 #dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=4, persistent_workers=True, pin_memory=True, collate_fn=collate_fn)
-dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+dataloader = DataLoader(
+    dataset,
+    batch_size=1,  
+    shuffle=True,
+    num_workers=4,  
+    pin_memory=True,  
+    persistent_workers=True, 
+    collate_fn=collate_fn
+)
 
 
 # %%
