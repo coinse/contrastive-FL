@@ -76,6 +76,11 @@ for project_name in list_project:
 print(len(ms))
 print(x)
 
+for i in range(len(batches)):
+    batches[i] = (torch.from_numpy(batches[i][0]), 
+                  torch.from_numpy(batches[i][1]), 
+                  torch.tensor(batches[i][2], dtype=torch.float))
+
 # %%
 from version_batch_modelloss import ContrastiveModel, ContrastiveLoss
 from torch.utils.data import DataLoader, Dataset, Sampler
