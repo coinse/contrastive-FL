@@ -29,31 +29,19 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device
 
 # %%
-#utility function from simfl-source
-def get_failing_tests(project, fault_no, ftc_path):
-    file_path = os.path.join(ftc_path, project, str(fault_no))
-    ftc = []
-    with open(file_path, "r") as ft_file:
-        for test_case in ft_file:
-            ftc.append(test_case.strip())
-    return ftc
-
-# %%
 # read data
 dist = []
-batches = []
-x = 0
-mn = float('inf')
-mx = 0
+fm = {}
+ms = {}
 flag = True
+x = 0
+print('creating dataset')
 for project_name in list_project:
     if project_name == 'Math_38' or project_name == 'Math_6':
         continue
     if project_title in project_name:
         project = project_name.split('_')[0]
         project_version = project_name.split('_')[1]
-        FT_PATH = "./failing_tests"
-        FAILING_TESTS = get_failing_tests(project, project_version, FT_PATH)
         os.chdir(f'd4j_data_fix/{project_name}')
         with open('mutant_data_new.pkl', 'rb') as mf:
             mutant = pickle.load(mf)
@@ -62,9 +50,16 @@ for project_name in list_project:
         with open('method_data_new.pkl', 'rb') as mef:
             method = pickle.load(mef)
         os.chdir(cur)
+        r_dict = {}
+        replacement_index = 0
+        method_list = []
+        for m in method:
+            method_list.append(torch.from_numpy(method[m]['embedding']))
+            r_dict[method[m]['method_name'].replace(" ", "")] = replacement_index
+            replacement_index+=1
+        fm[project_name] = torch.stack(method_list)
         for mutant_no in mutant:
             if mutant[mutant_no]['killer']:
-                dp = []
                 ct = None
                 ctd = float('inf')
                 for t in mutant[mutant_no]['killer']:
@@ -72,26 +67,14 @@ for project_name in list_project:
                     if d < ctd:
                         ctd = d
                         ct = t
-                dp.append((mutant[mutant_no]['embedding'], test[ct], 1))
-                for m in method:
-                    if method[m]['method_name'] != mutant[mutant_no]['method_name']:
-                        dp.append((method[m]['embedding'], test[ct], 0))
-                        dist.append(np.linalg.norm(method[m]['embedding']- test[ct]))
-                    if len(dp)>= 4096:
-                        break
-                random.shuffle(dp)
-                batches.append(dp)
-                x += len(dp)
-                if len(dp)>mx:
-                    mx = len(dp)
-                if len(dp)<mn:
-                    mn = len(dp)
-                if flag:
-                    print(sys.getsizeof(dp))
-                    flag = False
-print(len(batches))
-print(x / len(batches))
-print(mn, mx)
+                if mutant[mutant_no]['signature'] in r_dict.keys():
+                    ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), torch.from_numpy(test[ct]))
+                    x+=len(r_dict)
+        for m in method:
+            dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]))
+        
+print(len(ms))
+print(x)
 
 # %%
 from version_batch_modelloss import ContrastiveModel, ContrastiveLoss
@@ -101,26 +84,38 @@ torch.cuda.empty_cache()
 
 # %%
 class PrecomputedBatchDataset(Dataset):
-    def __init__(self, batches):
-        self.batches = batches  # List of precomputed batches
+    def __init__(self, fix_method, mutant_sample):
+        self.method = fix_method
+        self.mutant = mutant_sample
+        self.keys = list(mutant_sample.keys())
 
     def __len__(self):
-        return len(self.batches)  # Number of batches
+        return len(self.mutant)
 
     def __getitem__(self, idx):
-        return self.batches[idx]  # Return batch directly
-def collate_fn(batch):
-    """Optimized collate function for DataLoader"""
-
-    method_batch = torch.stack([torch.from_numpy(x[0]) for x in batch[0]], dim=0)
-    test_batch = torch.stack([torch.from_numpy(x[1]) for x in batch[0]], dim=0)
-    label = torch.tensor([x[2] for x in batch[0]], dtype=torch.float)
+        k = self.keys[idx]
+        m_placeholder = self.method[k[0]].clone()
+        b_size = m_placeholder.size()[0]
+        mut = self.mutant[k]
+        mutant_idx = mut[0]
+        ##method tensor
+        m_placeholder = m_placeholder.view(-1, 768)
+        m_placeholder[mutant_idx] = mut[1]
+        
+        ##label tensor
+        label = torch.zeros(b_size)
+        label[mutant_idx] = 1.0
+        
+        ##test tensor
+        test_copy = [mut[2].clone() for _ in range(b_size)]
+        test = torch.stack(test_copy, dim=0)
+        return m_placeholder, test, label
     
-    return method_batch.pin_memory(), test_batch.pin_memory(), label.pin_memory()
+def collate_fn(batch):
+    return batch[0][0], batch[0][1], batch[0][2]
 
 
-dataset = PrecomputedBatchDataset(batches)
-#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=4, persistent_workers=True, pin_memory=True, collate_fn=collate_fn)
+dataset = PrecomputedBatchDataset(fm, ms)
 dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
 
 
@@ -163,7 +158,7 @@ loss = ContrastiveLoss(margin=init_margin)
 optimizer = torch.optim.Adam(
         params=filter(lambda p: p.requires_grad, model.parameters()),
         lr=learning_rate)
-steps_per_epoch = len(batches)
+steps_per_epoch = len(ms)
 total_steps = steps_per_epoch * expected_epoch
 warmup_steps = int(0.1 * total_steps)
 power = 2
@@ -180,16 +175,15 @@ best_val_loss = float('inf')
 loss_list = []
 positive_loss_list = []
 negative_loss_list = []
-print('training start')
+
 for epoch in range(num_epoch):
-    epoch_loss = 0.0
-    positive_epoch_loss = 0.0
-    negative_epoch_loss = 0.0
+    epoch_loss = torch.tensor(0.0, device = device)
+    positive_epoch_loss = torch.tensor(0.0, device = device)
+    negative_epoch_loss = torch.tensor(0.0, device = device)
     for batch_idx, (method_batch, test_batch, label) in tqdm(enumerate(dataloader)):
         method_batch = method_batch.to(device, non_blocking=True)
         test_batch = test_batch.to(device, non_blocking=True)
         label = label.to(device, non_blocking=True)
-
         output = model(test_batch, method_batch)
         optimizer.zero_grad()
         l, pl, nl = loss(output, label)
@@ -198,14 +192,13 @@ for epoch in range(num_epoch):
         step = steps_per_epoch*epoch+batch_idx
         if step < warmup_steps:
             warmup_scheduler.step()
-        epoch_loss += l.item()
-        positive_epoch_loss += pl.item()
-        negative_epoch_loss += nl.item()
+        epoch_loss += l
+        positive_epoch_loss += pl
+        negative_epoch_loss += nl
     grad_norm = compute_gradient_norm(model)
-    
-    avg_epoch_loss = epoch_loss / len(batches)
-    positive_avg_epoch_loss = positive_epoch_loss / len(batches)
-    negative_avg_epoch_loss = negative_epoch_loss / len(batches)
+    avg_epoch_loss = (epoch_loss / len(ms)).item()
+    positive_avg_epoch_loss = (positive_epoch_loss / len(ms)).item()
+    negative_avg_epoch_loss = (negative_epoch_loss / len(ms)).item()
     
     loss_list.append(avg_epoch_loss)
     positive_loss_list.append(positive_avg_epoch_loss)
@@ -217,12 +210,15 @@ for epoch in range(num_epoch):
     if avg_epoch_loss<best_val_loss:
         best_val_loss = avg_epoch_loss
         p_counter = 0
+        os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
+        torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}_best.pth')
     else:
         p_counter+=1
     if p_counter >= 5:
         if epoch+1>30:
             break
     if epoch+1 % 5 == 0:
+        os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
         torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}_{epoch+1}.pth')
 epochs = list(range(1, len(loss_list)+1))
 plt.figure(figsize=(8, 6))
@@ -238,7 +234,5 @@ plt.legend(fontsize=12)
 os.makedirs(f'CROFL results/version_batch/{project_title}', exist_ok=True)
 plt.savefig(f'CROFL results/version_batch/{project_title}/{arc}_newloss_{m}.png', format="png", dpi=300, bbox_inches="tight")
 plt.close()
-os.makedirs(f'new-model/{project_title}', exist_ok=True)
+os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
 torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
-
-

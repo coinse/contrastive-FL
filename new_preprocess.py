@@ -278,6 +278,7 @@ for project_name in tqdm(list_project):
             last_line.append((before_op, after_op))
         line_strip[line_index] = mutation
         ALL_MUTANTS[mutant_no]['snippet'] = '\n'.join(line_strip)
+        ALL_MUTANTS[mutant_no]['signature'] = signature_key[0]
     mutants = { mutant_no: mutant_info for mutant_no, mutant_info in ALL_MUTANTS.items()
                 if convert_signature(mutant_info['method_name']) in COVERED_METHODS }
     cm = {}
@@ -328,12 +329,11 @@ for project_name in tqdm(list_project):
         code = mutants[mutant_no]['snippet']
         code = format_code(code)
         embedding = model.encode(code)
-        tag = 'b' if mutants[mutant_no]['killer'] else 'nb'
         mutant_embedding[mutant_no] = {
             'method_name': mutants[mutant_no]['method_name'],
+            'signature': mutants[mutant_no]['signature'],
             'killer': mutants[mutant_no]['killer'],
             'embedding': embedding,
-            'tag' : tag,
             'snippet': mutants[mutant_no]['snippet']
         }
     with open('mutant_data_new.pkl', 'wb') as mf:
@@ -349,7 +349,6 @@ for project_name in tqdm(list_project):
             'method_name' : ms,
             'killer' : [],
             'embedding' : embedding,
-            'tag': 'nc',
             'snippet': m['snippet']
         }
     with open('method_data_new.pkl', 'wb') as mef:
