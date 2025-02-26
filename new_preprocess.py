@@ -11,7 +11,7 @@ os.chdir(cur)
 os.chdir('d4j_data')
 base = os.getcwd()
 list_project = os.listdir()
-list_project = [x for x in list_project if 'Chart' in x]
+list_project = [x for x in list_project if 'Math' in x]
 os.chdir(cur)
 # utility function from simfl-source
 def get_failing_tests(project, fault_no, ftc_path):
@@ -174,7 +174,7 @@ def method_to_signature(m_name, m_dict):
 
 def format_code(code):
     astyle_path = 'C:\\Users\\COINSE\\Downloads\\astyle-3.6.6-x64\\astyle-3.6.6-x64\\astyle.exe'
-    result = subprocess.run([astyle_path], input=code, capture_output=True, text=True)
+    result = subprocess.run([astyle_path], input=code, capture_output=True, text=True, encoding='utf-8')
     return result.stdout
 
 # main process

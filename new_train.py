@@ -12,7 +12,7 @@ import sys
 # %%
 #project to be evaluated
 pr_type = ['Chart', 'Math', 'Time', 'Lang']
-project_title = pr_type[0]
+project_title = pr_type[1]
 #pr_version = '1'
 #project_name = project_title+'_'+pr_version
 
@@ -29,14 +29,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device
 
 # %%
-# read data
 dist = []
 fm = {}
 ms = {}
 flag = True
 x = 0
+mn = float('inf')
+mx = 0
 print('creating dataset')
-for project_name in list_project:
+for project_name in tqdm(list_project):
     if project_name == 'Math_38' or project_name == 'Math_6':
         continue
     if project_title in project_name:
@@ -57,7 +58,12 @@ for project_name in list_project:
             method_list.append(torch.from_numpy(method[m]['embedding']))
             r_dict[method[m]['method_name'].replace(" ", "")] = replacement_index
             replacement_index+=1
-        fm[project_name] = torch.stack(method_list)
+        label_tensor = torch.zeros(len(method_list))
+        fm[project_name] = (torch.stack(method_list), label_tensor)
+        if len(r_dict) < mn:
+            mn = len(r_dict)
+        if len(r_dict) > mx:
+            mx = len(r_dict)
         for mutant_no in mutant:
             if mutant[mutant_no]['killer']:
                 ct = None
@@ -74,12 +80,8 @@ for project_name in list_project:
             dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]))
         
 print(len(ms))
-print(x)
-
-for i in range(len(batches)):
-    batches[i] = (torch.from_numpy(batches[i][0]), 
-                  torch.from_numpy(batches[i][1]), 
-                  torch.tensor(batches[i][2], dtype=torch.float))
+print(x / len(ms))
+print(mn, mx)
 
 # %%
 from version_batch_modelloss import ContrastiveModel, ContrastiveLoss
@@ -88,6 +90,11 @@ import matplotlib.pyplot as plt
 torch.cuda.empty_cache()
 
 # %%
+#import multiprocessing
+#multiprocessing.set_start_method("spawn")
+torch.multiprocessing.set_start_method('spawn', force = True)
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 class PrecomputedBatchDataset(Dataset):
     def __init__(self, fix_method, mutant_sample):
         self.method = fix_method
@@ -99,7 +106,7 @@ class PrecomputedBatchDataset(Dataset):
 
     def __getitem__(self, idx):
         k = self.keys[idx]
-        m_placeholder = self.method[k[0]].clone()
+        m_placeholder = self.method[k[0]][0].clone()
         b_size = m_placeholder.size()[0]
         mut = self.mutant[k]
         mutant_idx = mut[0]
@@ -108,11 +115,11 @@ class PrecomputedBatchDataset(Dataset):
         m_placeholder[mutant_idx] = mut[1]
         
         ##label tensor
-        label = torch.zeros(b_size)
+        label = self.method[k[0]][1].clone()
         label[mutant_idx] = 1.0
         
         ##test tensor
-        test_copy = [mut[2].clone() for _ in range(b_size)]
+        test_copy = [mut[2]] * b_size
         test = torch.stack(test_copy, dim=0)
         return m_placeholder, test, label
     
@@ -121,12 +128,13 @@ def collate_fn(batch):
 
 
 dataset = PrecomputedBatchDataset(fm, ms)
+#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, persistent_workers = True, num_workers=4, pin_memory=True, collate_fn=collate_fn)
 dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
 
 
 # %%
 #config
-num_epoch = 1000
+num_epoch = 1
 expected_epoch = 100
 projection_dim = 768
 output_dim = 768
@@ -185,10 +193,13 @@ for epoch in range(num_epoch):
     epoch_loss = torch.tensor(0.0, device = device)
     positive_epoch_loss = torch.tensor(0.0, device = device)
     negative_epoch_loss = torch.tensor(0.0, device = device)
+    train_time = []
+    epoch_start = time.perf_counter()
     for batch_idx, (method_batch, test_batch, label) in tqdm(enumerate(dataloader)):
         method_batch = method_batch.to(device, non_blocking=True)
         test_batch = test_batch.to(device, non_blocking=True)
         label = label.to(device, non_blocking=True)
+        training_start = time.perf_counter()
         output = model(test_batch, method_batch)
         optimizer.zero_grad()
         l, pl, nl = loss(output, label)
@@ -200,6 +211,9 @@ for epoch in range(num_epoch):
         epoch_loss += l
         positive_epoch_loss += pl
         negative_epoch_loss += nl
+        training_end = time.perf_counter()
+        train_time.append(training_end - training_start)
+    epoch_end = time.perf_counter()
     grad_norm = compute_gradient_norm(model)
     avg_epoch_loss = (epoch_loss / len(ms)).item()
     positive_avg_epoch_loss = (positive_epoch_loss / len(ms)).item()
@@ -208,7 +222,7 @@ for epoch in range(num_epoch):
     loss_list.append(avg_epoch_loss)
     positive_loss_list.append(positive_avg_epoch_loss)
     negative_loss_list.append(negative_avg_epoch_loss)
-
+    print(f'epoch {epoch+1} took: training - {sum(train_time)} seconds, total - {epoch_end - epoch_start} seconds')
     print(f'epoch {epoch+1} trained with {x} data, average loss:{avg_epoch_loss}, Gradient_norm:{grad_norm}')
     if step >= warmup_steps:
         plateau_scheduler.step(avg_epoch_loss)
@@ -241,3 +255,5 @@ plt.savefig(f'CROFL results/version_batch/{project_title}/{arc}_newloss_{m}.png'
 plt.close()
 os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
 torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
+
+

@@ -17,16 +17,14 @@ os.chdir('d4j_data')
 base = os.getcwd()
 list_project = os.listdir()
 os.chdir(cur)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device
 
 #project to be evaluated
 list_project_title = ['Chart', 'Math', 'Time', 'Lang']
-project_title = list_project_title[0]
+project_title = list_project_title[3]
 list_project = [x for x in list_project if project_title in x]
 model_version = project_title
-
-#config
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
 
 #utility function from simfl-source
 def get_failing_tests(project, fault_no, ftc_path):
@@ -89,7 +87,7 @@ s_model = SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remot
 s_model.max_seq_length = 8192
 s_model.eval()
 
-from new_modelloss import ContrastiveModel
+from version_batch_modelloss import ContrastiveModel
 #main evaluation
 #blocked code for when using all relevant test
 
@@ -101,17 +99,27 @@ ds_mod = ['full']
 strat = ['min', 'avg']
 a = '0.1'
 for ds in ds_mod:
+    acc_stat_avg = [0, 0, 0, 0]
     acc_stat_min = [0, 0, 0, 0]
-    model_dict = torch.load(f'new-model/{model_version}/version_batch/model_{arc}_{a}_{mod}.pth')
+    model_dict = torch.load(f'new-model/{model_version}/model_{arc}_{a}_{mod}.pth')
+    new_state_dict = {}
+    for k, v in model_dict.items():
+        new_key = k.replace("module.", "")  # Remove the "module." prefix
+        new_state_dict[new_key] = v
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = ContrastiveModel(embedding_dim=768, projection_dim=768, output_dim=768, mode=mod)
-    model.load_state_dict(model_dict)
+    model.load_state_dict(new_state_dict)
+    model.to(device)
+    model = torch.nn.DataParallel(model, device_ids=[0, 1])
+
     model.eval()
     uncovered_collage = []
     for p in tqdm(list_project):
         if project_title in p and p != 'Math_38' and p != 'Math_6':
             method_snip = json.load(open(f'd4j_data/{p}/snippet.json'))
             test_method = json.load(open(f'd4j_data/{p}/test_snippet.json'))
-            os.chdir('d4j_data')
+            os.chdir(f'd4j_data/{p}')
             with open('buggy_method_data.pkl', 'rb') as mf:
                 m_emb = pickle.load(mf)
             with open('failing_test_data.pkl', 'rb') as tf:
@@ -128,6 +136,10 @@ for ds in ds_mod:
             acc3_min= 0
             acc5_min= 0
             acc10_min = 0
+            acc1_avg= 0
+            acc3_avg= 0
+            acc5_avg= 0
+            acc10_avg = 0
             truncated_test = []
             for entry in test_method:
                 testcode = entry['snippet']
@@ -182,14 +194,14 @@ for ds in ds_mod:
             COVERED_METHODS = [x for x in COVERED_METHODS if x not in UNCOVERED_METHODS]
             for method_signature in COVERED_METHODS_CODING:
                 batch = []
-                method_output = m_emb[method_signature]
+                method_output = m_emb[method_signature]['embedding']
                 method_output = torch.from_numpy(method_output)
                 for test in FAILING_TESTS_CODING:
-                    test_output = ft_emb[test]
+                    test_output = ft_emb[test]['embedding']
                     test_output = torch.from_numpy(test_output)
                     batch.append((test_output, method_output))
-                test_batch = torch.stack([x[0] for x in batch])
-                method_batch = torch.stack([x[1] for x in batch])
+                test_batch = torch.stack([x[0] for x in batch]).to(device)
+                method_batch = torch.stack([x[1] for x in batch]).to(device)
                 #output = torch.norm(test_batch - method_batch, p=2, dim=1)
                 output = model(test_batch, method_batch)
                 SCORE[method_signature] = output.tolist()
@@ -198,6 +210,8 @@ for ds in ds_mod:
             for method in COVERED_METHODS:
                 signature = method_to_signature(method, method_dict)
                 scores_min[method] = min(SCORE[signature])
+                scores_avg[method] = sum(SCORE[signature])/len(SCORE[signature])
+            sorted_scores_avg = list(sorted(scores_avg.items(), key=operator.itemgetter(1)))
             sorted_scores_min = list(sorted(scores_min.items(), key=operator.itemgetter(1)))                
             def top_sorted(l, n, fc):
                 top_crop = l[:n]
@@ -208,6 +222,16 @@ for ds in ds_mod:
                         found = True
                         break
                 return found
+            if sorted_scores_avg[0][0] in FAULTY_COMPONENTS:
+                acc1_avg+=1
+            if acc1_avg or top_sorted(sorted_scores_avg, 3, FAULTY_COMPONENTS):
+                acc3_avg+=1
+            if acc1_avg or acc3_avg or top_sorted(sorted_scores_avg, 5, FAULTY_COMPONENTS):
+                acc5_avg+=1
+            if acc1_avg or acc3_avg or acc5_avg or top_sorted(sorted_scores_avg, 10, FAULTY_COMPONENTS):
+                acc10_avg+=1
+            acc_avg = [acc1_avg, acc3_avg, acc5_avg, acc10_avg]
+            acc_stat_avg = [x+y for x, y in zip(acc_stat_avg, acc_avg)]
             if sorted_scores_min[0][0] in FAULTY_COMPONENTS:
                 acc1_min+=1
             if acc1_min or top_sorted(sorted_scores_min, 3, FAULTY_COMPONENTS):
@@ -218,6 +242,12 @@ for ds in ds_mod:
                 acc10_min+=1
             acc_min = [acc1_min, acc3_min, acc5_min, acc10_min]
             acc_stat_min = [x+y for x, y in zip(acc_stat_min, acc_min)]
+    text_list.append('accstat for {}:'.format(f'new-model/{model_version}/model_{arc}_{mod}_{ds} with avg'))
+    text_list.append('acc@1: {}'.format(acc_stat_avg[0]))
+    text_list.append('acc@3: {}'.format(acc_stat_avg[1]))
+    text_list.append('acc@5: {}'.format(acc_stat_avg[2]))
+    text_list.append('acc@10: {}'.format(acc_stat_avg[3]))
+    text_list.append('\n')
     text_list.append('accstat for {}:'.format(f'new-model/{model_version}/model_{arc}_{mod}_{ds} with min'))
     text_list.append('acc@1: {}'.format(acc_stat_min[0]))
     text_list.append('acc@3: {}'.format(acc_stat_min[1]))
