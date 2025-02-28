@@ -9,26 +9,26 @@ import pickle
 import random
 import sys
 
+
 # %%
 #project to be evaluated
 pr_type = ['Chart', 'Math', 'Time', 'Lang']
-project_title = pr_type[1]
+project_title = pr_type[3]
 #pr_version = '1'
 #project_name = project_title+'_'+pr_version
 
 
 # %%
-start = time.time()
 cur = "c:/Users/COINSE/Downloads/simfl-extension"
 os.chdir(cur)
 os.chdir('d4j_data')
 base = os.getcwd()
 list_project = os.listdir()
 os.chdir(cur)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device
+list_project = [x for x in list_project if project_title in x]
 
 # %%
+# read data
 dist = []
 fm = {}
 ms = {}
@@ -90,51 +90,67 @@ import matplotlib.pyplot as plt
 torch.cuda.empty_cache()
 
 # %%
-#import multiprocessing
-#multiprocessing.set_start_method("spawn")
-torch.multiprocessing.set_start_method('spawn', force = True)
-torch.multiprocessing.set_sharing_strategy('file_system')
-
 class PrecomputedBatchDataset(Dataset):
     def __init__(self, fix_method, mutant_sample):
         self.method = fix_method
         self.mutant = mutant_sample
         self.keys = list(mutant_sample.keys())
+        self.previous_version = None
+        self.previous_mutant_index = None
+        self.previous_embedding = None
 
     def __len__(self):
         return len(self.mutant)
 
     def __getitem__(self, idx):
         k = self.keys[idx]
-        m_placeholder = self.method[k[0]][0].clone()
-        b_size = m_placeholder.size()[0]
+        if self.previous_version !=None:
+            self.method[self.previous_version][0][self.previous_mutant_index] = self.previous_embedding
+            self.method[self.previous_version][1][self.previous_mutant_index] = 0.0
+        
+        #m_placeholder = self.method[k[0]][0].clone()
+        #b_size = m_placeholder.size()[0]
+        b_size = self.method[k[0]][0].size()[0]
         mut = self.mutant[k]
         mutant_idx = mut[0]
+
+
         ##method tensor
-        m_placeholder = m_placeholder.view(-1, 768)
-        m_placeholder[mutant_idx] = mut[1]
-        
+        #m_placeholder = m_placeholder.view(-1, 768)
+        self.method[k[0]][0][mutant_idx].view(-1, 768)
+        # saving
+        self.previous_version = k[0]
+        self.previous_mutant_index = mutant_idx
+        self.previous_embedding = self.method[k[0]][0][mutant_idx].clone()
+        # replace 
+        self.method[k[0]][0][mutant_idx] = mut[1]
+
         ##label tensor
-        label = self.method[k[0]][1].clone()
-        label[mutant_idx] = 1.0
+        #label = self.method[k[0]][1].clone()
+        self.method[k[0]][1][mutant_idx] = 1.0
+        #label[mutant_idx] = 1.0
         
         ##test tensor
         test_copy = [mut[2]] * b_size
         test = torch.stack(test_copy, dim=0)
-        return m_placeholder, test, label
+        return self.method[k[0]][0], test, self.method[k[0]][1]
     
 def collate_fn(batch):
     return batch[0][0], batch[0][1], batch[0][2]
 
+#torch.multiprocessing.set_start_method('fork', force = True)
+#torch.multiprocessing.set_sharing_strategy('file_system')
 
 dataset = PrecomputedBatchDataset(fm, ms)
-#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, persistent_workers = True, num_workers=4, pin_memory=True, collate_fn=collate_fn)
-dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True,
+    collate_fn=collate_fn, num_workers= 4, prefetch_factor = 2, persistent_workers = True)
+#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn, persistent_workers = True, num_workers = 2)
 
 
 # %%
 #config
-num_epoch = 1
+num_epoch = 1000
 expected_epoch = 100
 projection_dim = 768
 output_dim = 768
@@ -167,6 +183,9 @@ arc = 'leaky_relu'
 a = 0.1
 m = 'euclidean'
 model = ContrastiveModel(embedding_dim=768, projection_dim=projection_dim, output_dim=output_dim, mode=m)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+model.to(device)
+model = torch.nn.DataParallel(model, device_ids=[0, 1])
 loss = ContrastiveLoss(margin=init_margin)
 optimizer = torch.optim.Adam(
         params=filter(lambda p: p.requires_grad, model.parameters()),
@@ -181,7 +200,6 @@ def warmup_lr_lambda(current_step: int):
     return 1.0
 warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lr_lambda)
 plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-6, verbose=True)
-model.to(device)
 model.train()
 p_counter = 0
 best_val_loss = float('inf')
@@ -223,7 +241,7 @@ for epoch in range(num_epoch):
     positive_loss_list.append(positive_avg_epoch_loss)
     negative_loss_list.append(negative_avg_epoch_loss)
     print(f'epoch {epoch+1} took: training - {sum(train_time)} seconds, total - {epoch_end - epoch_start} seconds')
-    print(f'epoch {epoch+1} trained with {x} data, average loss:{avg_epoch_loss}, Gradient_norm:{grad_norm}')
+    print(f'epoch {epoch+1} trained with {x} data, average loss:{avg_epoch_loss}, Gradient_norm:{grad_norm}, counter:{p_counter}')
     if step >= warmup_steps:
         plateau_scheduler.step(avg_epoch_loss)
     if avg_epoch_loss<best_val_loss:
@@ -236,7 +254,7 @@ for epoch in range(num_epoch):
     if p_counter >= 5:
         if epoch+1>30:
             break
-    if epoch+1 % 5 == 0:
+    if (epoch+1) % 5 == 0:
         os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
         torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}_{epoch+1}.pth')
 epochs = list(range(1, len(loss_list)+1))
@@ -255,5 +273,3 @@ plt.savefig(f'CROFL results/version_batch/{project_title}/{arc}_newloss_{m}.png'
 plt.close()
 os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
 torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
-
-
