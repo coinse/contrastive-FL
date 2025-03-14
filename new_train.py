@@ -12,8 +12,14 @@ import sys
 
 # %%
 #project to be evaluated
-pr_type = ['Chart', 'Math', 'Time', 'Lang']
-project_title = pr_type[3]
+import argparse
+parser = argparse.ArgumentParser(description='script usage')
+
+parser.add_argument("--title", type=str, required=True)
+parser.add_argument("--mod", type=str, required=True)
+args = parser.parse_args()
+project_title = args.title
+
 #pr_version = '1'
 #project_name = project_title+'_'+pr_version
 
@@ -24,8 +30,11 @@ os.chdir(cur)
 os.chdir('d4j_data')
 base = os.getcwd()
 list_project = os.listdir()
-os.chdir(cur)
 list_project = [x for x in list_project if project_title in x]
+os.chdir(cur)
+list_project = sorted(list_project, key=lambda x: int(x.split('_')[1]), reverse=True)
+mutant_source = list_project[:1]
+
 
 # %%
 # read data
@@ -40,7 +49,7 @@ print('creating dataset')
 for project_name in tqdm(list_project):
     if project_name == 'Math_38' or project_name == 'Math_6':
         continue
-    if project_title in project_name:
+    if project_title in project_name and project_name in mutant_source:
         project = project_name.split('_')[0]
         project_version = project_name.split('_')[1]
         os.chdir(f'd4j_data_fix/{project_name}')
@@ -66,19 +75,52 @@ for project_name in tqdm(list_project):
             mx = len(r_dict)
         for mutant_no in mutant:
             if mutant[mutant_no]['killer']:
-                ct = None
-                ctd = float('inf')
-                for t in mutant[mutant_no]['killer']:
-                    d = np.linalg.norm(mutant[mutant_no]['embedding'] - test[t])
-                    if d < ctd:
-                        ctd = d
-                        ct = t
-                if mutant[mutant_no]['signature'] in r_dict.keys():
-                    ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), torch.from_numpy(test[ct]))
-                    x+=len(r_dict)
+                if args.mod == 'minimum':
+                    ct = None
+                    ctd = float('inf')
+                else:
+                    tr = []
+                    initd = []
+                if args.mod == 'all':
+                    tl = []
+                    for t in mutant[mutant_no]['killer']:
+                        if mutant[mutant_no]['signature'] in r_dict.keys():
+                            ms[(project_name, mutant_no, t)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), torch.from_numpy(test[t]))
+                            x+=len(r_dict)
+                        tl.append(t)
+
+                else:
+                    for t in mutant[mutant_no]['killer']:
+                        d = np.linalg.norm(mutant[mutant_no]['embedding'] - test[t])
+                        if args.mod == 'minimum':
+                            if d < ctd:
+                                ctd = d
+                                ct = t
+                        else:
+                            tr.append(torch.from_numpy(test[t]))
+                            initd.append(d)        
+                    if args.mod == 'waverage':    
+                        eps = 1e-8
+                        dtow = [1/(d+eps) for d in initd]
+                        sw = sum(dtow)
+                        wt = [(x/sw) for x in dtow]
+                        tr = torch.sum(torch.tensor(wt).unsqueeze(1) * torch.stack(tr), dim=0) 
+                    elif args.mod == 'minimum':
+                        tr = torch.from_numpy(test[ct])
+                    else:
+                        tr = torch.mean(torch.stack(tr), dim=0)
+                    if mutant[mutant_no]['signature'] in r_dict.keys():
+                        ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr.float())
+                        x+=len(r_dict)
         for m in method:
-            dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]))
-        
+            if args.mod == 'all':
+                for t in tl:
+                    dist.append(np.linalg.norm(method[m]['embedding'] - test[t]))
+            else:
+                if args.mod == 'minimum':
+                    dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]))
+                else:
+                    dist.append(np.linalg.norm(method[m]['embedding'] - tr.numpy()))
 print(len(ms))
 print(x / len(ms))
 print(mn, mx)
@@ -117,7 +159,7 @@ class PrecomputedBatchDataset(Dataset):
 
         ##method tensor
         #m_placeholder = m_placeholder.view(-1, 768)
-        self.method[k[0]][0][mutant_idx].view(-1, 768)
+        #self.method[k[0]][0][mutant_idx].view(-1, 768)
         # saving
         self.previous_version = k[0]
         self.previous_mutant_index = mutant_idx
@@ -142,16 +184,16 @@ def collate_fn(batch):
 #torch.multiprocessing.set_sharing_strategy('file_system')
 
 dataset = PrecomputedBatchDataset(fm, ms)
-#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
-dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True,
-    collate_fn=collate_fn, num_workers= 4, prefetch_factor = 2, persistent_workers = True)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+#dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True,
+#    collate_fn=collate_fn, num_workers= 4, prefetch_factor = 2, persistent_workers = True)
 #dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, collate_fn=collate_fn, persistent_workers = True, num_workers = 2)
 
 
 # %%
 #config
-num_epoch = 1000
-expected_epoch = 100
+num_epoch = 50
+expected_epoch = 50
 projection_dim = 768
 output_dim = 768
 init_scale = 0.75
@@ -165,7 +207,7 @@ res_weight = 1.0
 print(threshold)
 print(init_margin)
 print(final_margin)
-
+exit()
 # %%
 def compute_gradient_norm(model):
     total_norm = 0.0
@@ -181,11 +223,10 @@ def compute_gradient_norm(model):
 #blocked code for using bigger model, progressive margin, and learning rate management (not done during previous result)
 arc = 'leaky_relu'
 a = 0.1
-m = 'euclidean'
+m = args.mod
 model = ContrastiveModel(embedding_dim=768, projection_dim=projection_dim, output_dim=output_dim, mode=m)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model.to(device)
-model = torch.nn.DataParallel(model, device_ids=[0, 1])
 loss = ContrastiveLoss(margin=init_margin)
 optimizer = torch.optim.Adam(
         params=filter(lambda p: p.requires_grad, model.parameters()),
@@ -254,9 +295,6 @@ for epoch in range(num_epoch):
     if p_counter >= 5:
         if epoch+1>30:
             break
-    if (epoch+1) % 5 == 0:
-        os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
-        torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}_{epoch+1}.pth')
 epochs = list(range(1, len(loss_list)+1))
 plt.figure(figsize=(8, 6))
 plt.plot(epochs, loss_list, marker='o', linestyle='-', color='g', label='Training Loss')
@@ -271,5 +309,5 @@ plt.legend(fontsize=12)
 os.makedirs(f'CROFL results/version_batch/{project_title}', exist_ok=True)
 plt.savefig(f'CROFL results/version_batch/{project_title}/{arc}_newloss_{m}.png', format="png", dpi=300, bbox_inches="tight")
 plt.close()
-os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
-torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
+#os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
+#torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
