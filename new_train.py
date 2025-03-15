@@ -33,7 +33,7 @@ list_project = os.listdir()
 list_project = [x for x in list_project if project_title in x]
 os.chdir(cur)
 list_project = sorted(list_project, key=lambda x: int(x.split('_')[1]), reverse=True)
-mutant_source = list_project[:1]
+mutant_source = list_project[:]
 
 
 # %%
@@ -41,7 +41,6 @@ mutant_source = list_project[:1]
 dist = []
 fm = {}
 ms = {}
-flag = True
 x = 0
 mn = float('inf')
 mx = 0
@@ -69,59 +68,52 @@ for project_name in tqdm(list_project):
             replacement_index+=1
         label_tensor = torch.zeros(len(method_list))
         fm[project_name] = (torch.stack(method_list), label_tensor)
-        if len(r_dict) < mn:
-            mn = len(r_dict)
-        if len(r_dict) > mx:
-            mx = len(r_dict)
         for mutant_no in mutant:
             if mutant[mutant_no]['killer']:
                 if args.mod == 'minimum':
                     ct = None
                     ctd = float('inf')
-                else:
-                    tr = []
-                    initd = []
-                if args.mod == 'all':
-                    tl = []
-                    for t in mutant[mutant_no]['killer']:
-                        if mutant[mutant_no]['signature'] in r_dict.keys():
-                            ms[(project_name, mutant_no, t)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), torch.from_numpy(test[t]))
-                            x+=len(r_dict)
-                        tl.append(t)
-
-                else:
                     for t in mutant[mutant_no]['killer']:
                         d = np.linalg.norm(mutant[mutant_no]['embedding'] - test[t])
-                        if args.mod == 'minimum':
-                            if d < ctd:
-                                ctd = d
-                                ct = t
-                        else:
-                            tr.append(torch.from_numpy(test[t]))
-                            initd.append(d)        
-                    if args.mod == 'waverage':    
-                        eps = 1e-8
-                        dtow = [1/(d+eps) for d in initd]
-                        sw = sum(dtow)
-                        wt = [(x/sw) for x in dtow]
-                        tr = torch.sum(torch.tensor(wt).unsqueeze(1) * torch.stack(tr), dim=0) 
-                    elif args.mod == 'minimum':
-                        tr = torch.from_numpy(test[ct])
-                    else:
-                        tr = torch.mean(torch.stack(tr), dim=0)
+                        if d < ctd:
+                            ctd = d
+                            ct = t
+                    tr = [torch.from_numpy(test[ct]).float()]
                     if mutant[mutant_no]['signature'] in r_dict.keys():
-                        ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr.float())
+                        ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
                         x+=len(r_dict)
+                if args.mod == 'all':
+                    tl = []
+                    tr = []
+                    for t in mutant[mutant_no]['killer']:
+                        tr.append(torch.from_numpy(test[t]))
+                        tl.append(t)
+                    if mutant[mutant_no]['signature'] in r_dict.keys():
+                        ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
+                        x+=len(r_dict)*len(tr)
+                if args.mod == 'average':
+                    tr = []
+                    for t in mutant[mutant_no]['killer']:
+                        tr.append(torch.from_numpy(test[t]))
+                    tr = [torch.mean(torch.stack(tr), dim=0).float()]
+                    if mutant[mutant_no]['signature'] in r_dict.keys():
+                        ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
+                        x+=len(r_dict)
+                if len(r_dict)*len(tr) < mn:
+                    mn = len(r_dict)*len(tr)
+                if len(r_dict)*len(tr) > mx:
+                    mx = len(r_dict)*len(tr)
+           
         for m in method:
+            if args.mod == 'minimum':
+                dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]))
             if args.mod == 'all':
                 for t in tl:
                     dist.append(np.linalg.norm(method[m]['embedding'] - test[t]))
-            else:
-                if args.mod == 'minimum':
-                    dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]))
-                else:
-                    dist.append(np.linalg.norm(method[m]['embedding'] - tr.numpy()))
+            if args.mod == 'average':
+                dist.append(np.linalg.norm(method[m]['embedding'] - tr[0].numpy()))
 print(len(ms))
+print(x)
 print(x / len(ms))
 print(mn, mx)
 
@@ -146,36 +138,41 @@ class PrecomputedBatchDataset(Dataset):
 
     def __getitem__(self, idx):
         k = self.keys[idx]
-        if self.previous_version !=None:
-            self.method[self.previous_version][0][self.previous_mutant_index] = self.previous_embedding
-            self.method[self.previous_version][1][self.previous_mutant_index] = 0.0
-        
-        #m_placeholder = self.method[k[0]][0].clone()
-        #b_size = m_placeholder.size()[0]
-        b_size = self.method[k[0]][0].size()[0]
         mut = self.mutant[k]
         mutant_idx = mut[0]
+        mutant_emb = mut[1]
+        killing_test = mut[2]
 
+        m_placeholder = self.method[k[0]][0].clone()
+        b_size = m_placeholder.size()[0]
 
-        ##method tensor
-        #m_placeholder = m_placeholder.view(-1, 768)
-        #self.method[k[0]][0][mutant_idx].view(-1, 768)
-        # saving
-        self.previous_version = k[0]
-        self.previous_mutant_index = mutant_idx
-        self.previous_embedding = self.method[k[0]][0][mutant_idx].clone()
-        # replace 
-        self.method[k[0]][0][mutant_idx] = mut[1]
+        method_tensor = m_placeholder.repeat(len(killing_test), 1) 
+        method_tensor[torch.arange(len(killing_test)) * b_size + mutant_idx] = mutant_emb
 
-        ##label tensor
-        #label = self.method[k[0]][1].clone()
-        self.method[k[0]][1][mutant_idx] = 1.0
-        #label[mutant_idx] = 1.0
+        l_placeholder = self.method[k[0]][1].clone()
+        label_tensor = l_placeholder.repeat(len(killing_test))
+        label_tensor[torch.arange(len(killing_test)) * b_size + mutant_idx] = 1.0
         
-        ##test tensor
-        test_copy = [mut[2]] * b_size
-        test = torch.stack(test_copy, dim=0)
-        return self.method[k[0]][0], test, self.method[k[0]][1]
+        test_tensor = torch.stack(killing_test)
+        test_tensor = test_tensor.repeat_interleave(b_size, dim=0) 
+
+        #method_copy = [m_placeholder] * len(killing_test)
+        #method_tensor = torch.stack(method_copy, dim=0)
+        #for i in range(len(killing_test)):
+        #    method_tensor[i*b_size+mutant_idx] = mutant_emb
+        #
+        #l_placeholder = self.method[k[0]][1].clone()
+        #label_copy = [l_placeholder] * len(killing_test)
+        #label_tensor = torch.stack(label_copy, dim=0)
+        #for i in range(len(killing_test)):
+        #    label_tensor[i*b_size+mutant_idx] = 1.0
+        #
+        #test_copy = [killing_test[0]] * b_size
+        #test_tensor = torch.stack(test_copy, dim=0)
+        #for i in range(1, len(killing_test)):
+        #    test_copy = [killing_test[i]] * b_size
+        #    test_tensor = torch.cat(test_tensor, torch.stack(test_copy, dim=0), dim=0)
+        return method_tensor, test_tensor, label_tensor
     
 def collate_fn(batch):
     return batch[0][0], batch[0][1], batch[0][2]
@@ -207,7 +204,6 @@ res_weight = 1.0
 print(threshold)
 print(init_margin)
 print(final_margin)
-exit()
 # %%
 def compute_gradient_norm(model):
     total_norm = 0.0
@@ -309,5 +305,5 @@ plt.legend(fontsize=12)
 os.makedirs(f'CROFL results/version_batch/{project_title}', exist_ok=True)
 plt.savefig(f'CROFL results/version_batch/{project_title}/{arc}_newloss_{m}.png', format="png", dpi=300, bbox_inches="tight")
 plt.close()
-#os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
-#torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
+os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
+torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
