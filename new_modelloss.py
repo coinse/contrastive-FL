@@ -14,17 +14,21 @@ class ContrastiveModel(nn.Module):
         self.mode = mode
     
     def forward(self, embedding1, embedding2=None):
-        x1 = self.projection(embedding1)
-        x1 = self.layer_norm(x1)
+        with torch.cuda.amp.autocast():
+            x1 = self.projection(embedding1)
+            x1 = self.layer_norm(x1)
         x1 = self.relu(x1)
         x1 = self.dropout(x1)
-        x1 = self.linear(x1)
+        with torch.cuda.amp.autocast():
+            x1 = self.linear(x1)
         if embedding2 is not None:
-            x2 = self.projection(embedding2)
-            x2 = self.layer_norm(x2)
+            with torch.cuda.amp.autocast():
+                x2 = self.projection(embedding2)
+                x2 = self.layer_norm(x2)
             x2 = self.relu(x2)
             x2 = self.dropout(x2)
-            x2 = self.linear(x2)
+            with torch.cuda.amp.autocast():
+                x2 = self.linear(x2)
             if self.mode == 'cosine':
                 distance = 1 - F.cosine_similarity(x1, x2, dim=1)
             elif self.mode == 'dot':
@@ -38,10 +42,12 @@ class ContrastiveLoss(nn.Module):
     def __init__(self, margin=15.0):
         super(ContrastiveLoss, self).__init__()
         self.margin = margin
-    
+        
     def forward(self, distances, labels):
         dynamic_margin = self.margin
         positive_loss = labels * torch.pow(distances, 2)
         negative_loss = (1 - labels) * torch.pow(torch.clamp(dynamic_margin - distances, min=0.0), 2)
         loss = positive_loss + negative_loss
+        
         return torch.mean(loss), torch.mean(positive_loss), torch.mean(negative_loss)
+        

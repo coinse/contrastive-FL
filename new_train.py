@@ -78,7 +78,7 @@ for project_name in tqdm(list_project):
                         if d < ctd:
                             ctd = d
                             ct = t
-                    tr = [torch.from_numpy(test[ct]).float()]
+                    tr = [torch.from_numpy(test[ct]).to(torch.float16)]
                     if mutant[mutant_no]['signature'] in r_dict.keys():
                         ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
                         x+=len(r_dict)
@@ -95,7 +95,7 @@ for project_name in tqdm(list_project):
                     tr = []
                     for t in mutant[mutant_no]['killer']:
                         tr.append(torch.from_numpy(test[t]))
-                    tr = [torch.mean(torch.stack(tr), dim=0).float()]
+                    tr = [torch.mean(torch.stack(tr), dim=0).to(torch.float16)]
                     if mutant[mutant_no]['signature'] in r_dict.keys():
                         ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
                         x+=len(r_dict)
