@@ -14,21 +14,27 @@ class ContrastiveModel(nn.Module):
         self.mode = mode
     
     def forward(self, embedding1, embedding2=None):
-        with torch.cuda.amp.autocast():
-            x1 = self.projection(embedding1)
-            x1 = self.layer_norm(x1)
+        #with torch.cuda.amp.autocast():
+        #    x1 = self.projection(embedding1)
+        #    x1 = self.layer_norm(x1)
+        x1 = self.projection(embedding1)
+        x1 = self.layer_norm(x1)
         x1 = self.relu(x1)
         x1 = self.dropout(x1)
-        with torch.cuda.amp.autocast():
-            x1 = self.linear(x1)
+        #with torch.cuda.amp.autocast():
+        #    x1 = self.linear(x1)
+        x1 = self.linear(x1)
         if embedding2 is not None:
-            with torch.cuda.amp.autocast():
-                x2 = self.projection(embedding2)
-                x2 = self.layer_norm(x2)
+            #with torch.cuda.amp.autocast():
+            #    x2 = self.projection(embedding2)
+            #    x2 = self.layer_norm(x2)
+            x2 = self.projection(embedding2)
+            x2 = self.layer_norm(x2)
             x2 = self.relu(x2)
             x2 = self.dropout(x2)
-            with torch.cuda.amp.autocast():
-                x2 = self.linear(x2)
+            #with torch.cuda.amp.autocast():
+            #    x2 = self.linear(x2)
+            x2 = self.linear(x2)
             if self.mode == 'cosine':
                 distance = 1 - F.cosine_similarity(x1, x2, dim=1)
             elif self.mode == 'dot':
@@ -45,7 +51,13 @@ class ContrastiveLoss(nn.Module):
         
     def forward(self, distances, labels):
         dynamic_margin = self.margin
-        positive_loss = labels * torch.pow(distances, 2)
+        #positive_loss = labels * torch.pow(torch.clamp(distances, min = 1e-3), 2)
+        positive_loss = labels * distances * distances
+        if torch.isnan(positive_loss).any():
+            print("⚠️ NaN detected after loss calculation")
+            for t1, t2 in zip(labels, distances):
+                if torch.isnan(t1) or torch.isnan(t2):
+                    print(f"{t1.item():.4f}  |  {t2.item():.4f}")
         negative_loss = (1 - labels) * torch.pow(torch.clamp(dynamic_margin - distances, min=0.0), 2)
         loss = positive_loss + negative_loss
         

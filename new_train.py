@@ -33,6 +33,8 @@ list_project = os.listdir()
 list_project = [x for x in list_project if project_title in x]
 os.chdir(cur)
 list_project = sorted(list_project, key=lambda x: int(x.split('_')[1]), reverse=True)
+m_scale = 0.25
+#mutant_source = list_project[:int(m_scale*len(list_project))]
 mutant_source = list_project[:]
 
 
@@ -44,6 +46,7 @@ ms = {}
 x = 0
 mn = float('inf')
 mx = 0
+kt_n = 5
 print('creating dataset')
 for project_name in tqdm(list_project):
     if project_name == 'Math_38' or project_name == 'Math_6':
@@ -78,31 +81,34 @@ for project_name in tqdm(list_project):
                         if d < ctd:
                             ctd = d
                             ct = t
-                    tr = [torch.from_numpy(test[ct]).to(torch.float16)]
+                    tr = [torch.from_numpy(test[ct])]
                     if mutant[mutant_no]['signature'] in r_dict.keys():
                         ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
                         x+=len(r_dict)
                 if args.mod == 'all':
                     tl = []
                     tr = []
-                    for t in mutant[mutant_no]['killer']:
-                        tr.append(torch.from_numpy(test[t]))
-                        tl.append(t)
-                    if mutant[mutant_no]['signature'] in r_dict.keys():
-                        ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
-                        x+=len(r_dict)*len(tr)
+                    if len(mutant[mutant_no]['killer'])<=kt_n:
+                        for t in mutant[mutant_no]['killer']:
+                            tr.append(torch.from_numpy(test[t]))
+                            tl.append(t)
+                        if mutant[mutant_no]['signature'] in r_dict.keys():
+                            ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
+                            x+=len(r_dict)*len(tr)
+                        
                 if args.mod == 'average':
                     tr = []
                     for t in mutant[mutant_no]['killer']:
                         tr.append(torch.from_numpy(test[t]))
-                    tr = [torch.mean(torch.stack(tr), dim=0).to(torch.float16)]
+                    tr = [torch.mean(torch.stack(tr), dim=0)]
                     if mutant[mutant_no]['signature'] in r_dict.keys():
                         ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
                         x+=len(r_dict)
-                if len(r_dict)*len(tr) < mn:
-                    mn = len(r_dict)*len(tr)
-                if len(r_dict)*len(tr) > mx:
-                    mx = len(r_dict)*len(tr)
+                if mutant[mutant_no]['signature'] in r_dict.keys() and len(tr)!=0:
+                    if len(r_dict)*len(tr) < mn:
+                        mn = len(r_dict)*len(tr)
+                    if len(r_dict)*len(tr) > mx:
+                        mx = len(r_dict)*len(tr)
            
         for m in method:
             if args.mod == 'minimum':
@@ -129,9 +135,6 @@ class PrecomputedBatchDataset(Dataset):
         self.method = fix_method
         self.mutant = mutant_sample
         self.keys = list(mutant_sample.keys())
-        self.previous_version = None
-        self.previous_mutant_index = None
-        self.previous_embedding = None
 
     def __len__(self):
         return len(self.mutant)
@@ -189,8 +192,8 @@ dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True, co
 
 # %%
 #config
-num_epoch = 50
-expected_epoch = 50
+num_epoch = 1000
+expected_epoch = 100
 projection_dim = 768
 output_dim = 768
 init_scale = 0.75
@@ -219,10 +222,11 @@ def compute_gradient_norm(model):
 #blocked code for using bigger model, progressive margin, and learning rate management (not done during previous result)
 arc = 'leaky_relu'
 a = 0.1
-m = args.mod
+m = args.mod if args.mod!='all' else args.mod+str(kt_n)
 model = ContrastiveModel(embedding_dim=768, projection_dim=projection_dim, output_dim=output_dim, mode=m)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model.to(device)
+model = torch.nn.DataParallel(model, device_ids=[0, 1])
 loss = ContrastiveLoss(margin=init_margin)
 optimizer = torch.optim.Adam(
         params=filter(lambda p: p.requires_grad, model.parameters()),
@@ -258,6 +262,10 @@ for epoch in range(num_epoch):
         output = model(test_batch, method_batch)
         optimizer.zero_grad()
         l, pl, nl = loss(output, label)
+        if torch.isnan(l).any():
+            os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
+            torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_lastnan.pth')
+            exit()
         l.backward()
         optimizer.step()
         step = steps_per_epoch*epoch+batch_idx
@@ -291,6 +299,9 @@ for epoch in range(num_epoch):
     if p_counter >= 5:
         if epoch+1>30:
             break
+    if (epoch+1)%5==0:
+        os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
+        torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}_{epoch+1}.pth')
 epochs = list(range(1, len(loss_list)+1))
 plt.figure(figsize=(8, 6))
 plt.plot(epochs, loss_list, marker='o', linestyle='-', color='g', label='Training Loss')
