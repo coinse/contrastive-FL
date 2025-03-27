@@ -11,8 +11,9 @@ os.chdir(cur)
 os.chdir('d4j_data')
 base = os.getcwd()
 list_project = os.listdir()
-list_project = [x for x in list_project if 'Math' in x]
+list_project = [x for x in list_project if 'Time' in x]
 os.chdir(cur)
+
 # utility function from simfl-source
 def get_failing_tests(project, fault_no, ftc_path):
     file_path = os.path.join(ftc_path, project, str(fault_no))
@@ -115,43 +116,6 @@ def find_closest_key(signature, line, m_dict):
     return signature, chosen_k
 
 
-def extract_identifiers(java_code):
-    method_pattern = r'\b(?:public|private|protected|static|final|synchronized|void|[\w<>]+)?\s+([\w<>]+)\s*\(([^)]*)\)'
-    method_pattern = r'\b(?:public|private|protected|static|final|synchronized|void|[\w<>]+)\s+([\w<>]+)\s*\(([^)]*)\)\s*\{'
-    
-    # Regex for other identifiers (variables, literals, etc.)
-    identifier_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
-    string_literal_pattern = r'"([^"]+)"'
-    
-    identifiers = []
-
-    # Extract method names and parameters
-    method_matches = re.findall(method_pattern, java_code)
-    for method, params in method_matches:
-        if params.strip():
-            param_list = [param.strip().split()[-1] for param in params.split(',') if param.strip()]
-            identifiers.append(f"Method:{method}({', '.join(param_list)})")
-        else:
-            identifiers.append(f"Method:{method}()")
-    
-    all_matches = re.findall(identifier_pattern, java_code)
-    keywords = {
-        'int', 'boolean', 'double', 'float', 'char', 'long', 'byte', 'short', 'void',
-        'class', 'this', 'new', 'return', 'if', 'else', 'for', 'while', 'switch',
-        'try', 'catch', 'instanceof', 'super', 'import', 'package', 'static', 'public',
-        'private', 'protected', 'abstract', 'final', 'native', 'synchronized',
-        'volatile', 'transient', 'interface', 'enum', 'extends', 'implements',
-        'const', 'goto', 'throw'
-    }
-    filtered_identifiers = [match for match in all_matches if match not in keywords]
-    identifiers.extend(filtered_identifiers)
-    
-    string_matches = re.findall(string_literal_pattern, java_code)
-    identifiers.extend(string_matches)
-    assert(len(identifiers)>0)
-
-    return '\n'.join(identifiers)
-
 def method_to_signature(m_name, m_dict):
     signature = m_name
     signature = signature.replace(' ', '')
@@ -173,19 +137,23 @@ def method_to_signature(m_name, m_dict):
 
 
 def format_code(code):
-    astyle_path = 'C:\\Users\\COINSE\\Downloads\\astyle-3.6.6-x64\\astyle-3.6.6-x64\\astyle.exe'
-    result = subprocess.run([astyle_path], input=code, capture_output=True, text=True, encoding='utf-8')
+    result = subprocess.run(['astyle'], input=code, capture_output=True, text=True)
     return result.stdout
+
+deprecated_bugs = ['Math_6', 'Math_38', 'Lang_2', 'Time_21']
 
 # main process
 # blocked code for identifier
 from sentence_transformers import SentenceTransformer, losses, InputExample, SentenceTransformerTrainer, SentenceTransformerTrainingArguments
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model = SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remote_code=True)
 model.max_seq_length = 8192
+model.to(device)
+model = torch.nn.DataParallel(model, device_ids=[0, 1])
 model.eval()
 uncovered_collage = []
 for project_name in tqdm(list_project):
-    if project_name == 'Math_38' or project_name == 'Math_6':
+    if project_name in deprecated_bugs:
         continue
     os.chdir(f'd4j_data_fix/{project_name}')
     method = json.load(open('snippet.json'))
@@ -328,12 +296,15 @@ for project_name in tqdm(list_project):
             continue
         code = mutants[mutant_no]['snippet']
         code = format_code(code)
-        embedding = model.encode(code)
+        #embedding = model.encode(code)
+        embedding = model.module.encode(code)
+        tag = 'b' if mutants[mutant_no]['killer'] else 'nb'
         mutant_embedding[mutant_no] = {
             'method_name': mutants[mutant_no]['method_name'],
             'signature': mutants[mutant_no]['signature'],
             'killer': mutants[mutant_no]['killer'],
             'embedding': embedding,
+            'tag' : tag,
             'snippet': mutants[mutant_no]['snippet']
         }
     with open('mutant_data_new.pkl', 'wb') as mf:
@@ -344,11 +315,13 @@ for project_name in tqdm(list_project):
         ms = m['signature']
         code = m['snippet']
         code = format_code(code)
-        embedding = model.encode(code)
+        #embedding = model.encode(code)
+        embedding = model.module.encode(code)
         fix_method_embedding[str(last_id)] = {
             'method_name' : ms,
             'killer' : [],
             'embedding' : embedding,
+            'tag': 'nc',
             'snippet': m['snippet']
         }
     with open('method_data_new.pkl', 'wb') as mef:
@@ -357,7 +330,8 @@ for project_name in tqdm(list_project):
     for test in ALL_TESTS_CODING:
         code = ALL_TESTS_CODING[test]
         code = format_code(code)
-        embedding = model.encode(code)
+        #embedding = model.encode(code)
+        embedding = model.module.encode(code)
         test_embedding[test] = embedding
     with open('test_data_new.pkl', 'wb') as tf:
         pickle.dump(test_embedding, tf)
@@ -421,7 +395,8 @@ for project_name in tqdm(list_project):
     for method_signature in COVERED_METHODS_CODING:
         code = COVERED_METHODS_CODING[method_signature]
         code = format_code(code)
-        embedding = model.encode(code)
+        #embedding = model.encode(code)
+        embedding = model.module.encode(code)
         covered_method_embedding[method_signature] = {
             'embedding': embedding
         }
@@ -431,7 +406,8 @@ for project_name in tqdm(list_project):
     for test in FAILING_TESTS_CODING:
         code = FAILING_TESTS_CODING[test]
         code = format_code(code)
-        embedding = model.encode(code)
+        #embedding = model.encode(code)
+        embedding = model.module.encode(code)
         failing_test_embedding[test] = {
             'embedding': embedding
         }

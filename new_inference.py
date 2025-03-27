@@ -16,15 +16,15 @@ os.chdir(cur)
 os.chdir('d4j_data')
 base = os.getcwd()
 list_project = os.listdir()
-os.chdir(cur)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device
+
 
 #project to be evaluated
 list_project_title = ['Chart', 'Math', 'Time', 'Lang']
 project_title = list_project_title[3]
 list_project = [x for x in list_project if project_title in x]
 model_version = project_title
+
+deprecated_bugs = ['Math_6', 'Math_38', 'Lang_2', 'Time_21']
 
 #utility function from simfl-source
 def get_failing_tests(project, fault_no, ftc_path):
@@ -93,7 +93,7 @@ from version_batch_modelloss import ContrastiveModel
 
 text_list = []
 arc = 'leaky_relu'
-mod = 'euclidean'
+mod = 'all1'
 #mod = 'cosine'
 ds_mod = ['full']
 strat = ['min', 'avg']
@@ -101,22 +101,22 @@ a = '0.1'
 for ds in ds_mod:
     acc_stat_avg = [0, 0, 0, 0]
     acc_stat_min = [0, 0, 0, 0]
-    model_dict = torch.load(f'new-model/{model_version}/model_{arc}_{a}_{mod}.pth')
+    model_dict = torch.load(f'new-model/{model_version}/version_batch/model_{arc}_{a}_{mod}_best.pth')
     new_state_dict = {}
     for k, v in model_dict.items():
         new_key = k.replace("module.", "")  # Remove the "module." prefix
         new_state_dict[new_key] = v
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
     model = ContrastiveModel(embedding_dim=768, projection_dim=768, output_dim=768, mode=mod)
     model.load_state_dict(new_state_dict)
     model.to(device)
-    model = torch.nn.DataParallel(model, device_ids=[0, 1])
+    model = torch.nn.DataParallel(model, device_ids=[2, 3])
 
     model.eval()
     uncovered_collage = []
     for p in tqdm(list_project):
-        if project_title in p and p != 'Math_38' and p != 'Math_6':
+        if project_title in p and p not in deprecated_bugs:
             method_snip = json.load(open(f'd4j_data/{p}/snippet.json'))
             test_method = json.load(open(f'd4j_data/{p}/test_snippet.json'))
             os.chdir(f'd4j_data/{p}')

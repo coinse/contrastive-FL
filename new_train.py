@@ -35,7 +35,8 @@ os.chdir(cur)
 list_project = sorted(list_project, key=lambda x: int(x.split('_')[1]), reverse=True)
 m_scale = 0.25
 #mutant_source = list_project[:int(m_scale*len(list_project))]
-mutant_source = list_project[:]
+mutant_source = list_project[:3]
+deprecated_bugs = ['Math_6', 'Math_38', 'Lang_2', 'Time_21']
 
 
 # %%
@@ -46,10 +47,10 @@ ms = {}
 x = 0
 mn = float('inf')
 mx = 0
-kt_n = 5
+kt_n = 1
 print('creating dataset')
 for project_name in tqdm(list_project):
-    if project_name == 'Math_38' or project_name == 'Math_6':
+    if project_name in deprecated_bugs:
         continue
     if project_title in project_name and project_name in mutant_source:
         project = project_name.split('_')[0]
@@ -220,7 +221,7 @@ def compute_gradient_norm(model):
 
 # %%
 #blocked code for using bigger model, progressive margin, and learning rate management (not done during previous result)
-arc = 'leaky_relu'
+arc = 'f'+str(len(mutant_source))
 a = 0.1
 m = args.mod if args.mod!='all' else args.mod+str(kt_n)
 model = ContrastiveModel(embedding_dim=768, projection_dim=projection_dim, output_dim=output_dim, mode=m)
@@ -299,9 +300,9 @@ for epoch in range(num_epoch):
     if p_counter >= 5:
         if epoch+1>30:
             break
-    if (epoch+1)%5==0:
-        os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
-        torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}_{epoch+1}.pth')
+    #if (epoch+1)%5==0:
+    #    os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
+    #    torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}_{epoch+1}.pth')
 epochs = list(range(1, len(loss_list)+1))
 plt.figure(figsize=(8, 6))
 plt.plot(epochs, loss_list, marker='o', linestyle='-', color='g', label='Training Loss')
@@ -316,5 +317,5 @@ plt.legend(fontsize=12)
 os.makedirs(f'CROFL results/version_batch/{project_title}', exist_ok=True)
 plt.savefig(f'CROFL results/version_batch/{project_title}/{arc}_newloss_{m}.png', format="png", dpi=300, bbox_inches="tight")
 plt.close()
-os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
-torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
+#os.makedirs(f'new-model/{project_title}/version_batch', exist_ok=True)
+#torch.save(model.state_dict(), f'new-model/{project_title}/version_batch/model_{arc}_{a}_{m}.pth')
