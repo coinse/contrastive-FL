@@ -8,7 +8,9 @@ import numpy as np
 import pickle
 import random
 import sys
-
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # %%
 #project to be evaluated
@@ -25,7 +27,6 @@ project_title = args.title
 
 
 # %%
-os.chdir('data')
 cur = os.getcwd()
 os.chdir(cur)
 os.chdir('d4j_data')
@@ -44,6 +45,7 @@ list_mutant = [list_project[i:i+5] for i in range(0, len(list_project), 5)]
 
 # %%
 # read data
+emb_dim = None
 for mutant_source in list_mutant:
     dist = []
     fm = {}
@@ -79,6 +81,8 @@ for mutant_source in list_mutant:
             tl = set()
             for mutant_no in mutant:
                 if mutant[mutant_no]['killer']:
+                    if emb_dim is None:
+                        emb_dim = mutant[mutant_no]['embedding'].shape[0]
                     if args.mod == 'minimum':
                         ct = None
                         ctd = float('inf')
@@ -87,7 +91,7 @@ for mutant_source in list_mutant:
                             if d < ctd:
                                 ctd = d
                                 ct = t
-                        tr = [torch.from_numpy(test[ct])]
+                        tr = [torch.from_numpy(test[ct]['embedding'])]
                         if mutant[mutant_no]['signature'] in r_dict.keys():
                             ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
                             x+=len(r_dict)
@@ -95,7 +99,7 @@ for mutant_source in list_mutant:
                         tr = []
                         if len(mutant[mutant_no]['killer'])<=kt_n:
                             for t in mutant[mutant_no]['killer']:
-                                tr.append(torch.from_numpy(test[t]))
+                                tr.append(torch.from_numpy(test[t]['embedding']))
                                 tl.add(t)
                             if mutant[mutant_no]['signature'] in r_dict.keys():
                                 assert(len(tr)>0)
@@ -104,7 +108,7 @@ for mutant_source in list_mutant:
                     if args.mod == 'average':
                         tr = []
                         for t in mutant[mutant_no]['killer']:
-                            tr.append(torch.from_numpy(test[t]))
+                            tr.append(torch.from_numpy(test[t]['embedding']))
                         tr = [torch.mean(torch.stack(tr), dim=0)]
                         if mutant[mutant_no]['signature'] in r_dict.keys():
                             ms[(project_name, mutant_no)] = (r_dict[mutant[mutant_no]['signature']], torch.from_numpy(mutant[mutant_no]['embedding']), tr)
@@ -116,10 +120,10 @@ for mutant_source in list_mutant:
                             mx = len(r_dict)*len(tr)
             for m in method:
                 if args.mod == 'minimum':
-                    dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]))
+                    dist.append(np.linalg.norm(method[m]['embedding'] - test[ct]['embedding']))
                 if args.mod == 'all':
                     for t in tl:
-                        dist.append(np.linalg.norm(method[m]['embedding'] - test[t]))
+                        dist.append(np.linalg.norm(method[m]['embedding'] - test[t]['embedding']))
                 if args.mod == 'average':
                     dist.append(np.linalg.norm(method[m]['embedding'] - tr[0].numpy()))
     print(len(ms))
@@ -130,7 +134,6 @@ for mutant_source in list_mutant:
     # %%
     from version_batch_modelloss import ContrastiveModel, ContrastiveLoss
     from torch.utils.data import DataLoader, Dataset, Sampler
-    import matplotlib.pyplot as plt
     torch.cuda.empty_cache()
 
     # %%
@@ -229,10 +232,10 @@ for mutant_source in list_mutant:
     for m in mutant_source:
         a+=m.split('_')[1]
     m = args.mod if args.mod!='all' else args.mod+str(kt_n)
-    model = ContrastiveModel(embedding_dim=768, projection_dim=projection_dim, output_dim=output_dim, mode=m)
+    model = ContrastiveModel(embedding_dim=emb_dim, projection_dim=projection_dim, output_dim=output_dim, mode=m)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    model = torch.nn.DataParallel(model, device_ids=[0, 1])
+    #model = torch.nn.DataParallel(model, device_ids=[0, 1])
     loss = ContrastiveLoss(margin=init_margin)
     optimizer = torch.optim.Adam(
             params=filter(lambda p: p.requires_grad, model.parameters()),
@@ -322,5 +325,6 @@ for mutant_source in list_mutant:
     os.makedirs(f'CROFL results/BM25/{project_title}', exist_ok=True)
     plt.savefig(f'CROFL results/BM25/{project_title}/{arc}_newloss_{m}.png', format="png", dpi=300, bbox_inches="tight")
     plt.close()
+    emb_dim = None
     #os.makedirs(f'new-model/{project_title}/BM25', exist_ok=True)
     #torch.save(model.state_dict(), f'new-model/{project_title}/BM25/model_{arc}_{a}_{m}.pth')

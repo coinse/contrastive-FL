@@ -7,6 +7,7 @@ import pickle
 import re
 from spiral import ronin
 from rank_bm25 import BM25Okapi
+import javalang
 
 #stem base directory
 cur = "c:/Users/COINSE/Downloads/simfl-extension"
@@ -19,7 +20,7 @@ os.chdir(cur)
 
 #project to be evaluated
 list_project_title = ['Chart', 'Math', 'Time', 'Lang']
-project_title = list_project_title[1]
+project_title = list_project_title[2]
 list_project = [x for x in list_project if project_title in x]
 deprecated_bugs = ['Math_6', 'Math_38', 'Lang_2', 'Time_21']
 list_project = [x for x in list_project if x not in deprecated_bugs]
@@ -147,12 +148,77 @@ def method_to_signature(m_name, m_dict):
             signature = signature.split('(')[0]+'('+','.join(new_p)+')'
     return signature
 
-
 def format_code(code):
     result = subprocess.run(['astyle'], input=code, capture_output=True, text=True)
     return result.stdout
 
+def remove_java_comments(java_code):
+    DEFAULT = 0
+    IN_LINE_COMMENT = 1
+    IN_BLOCK_COMMENT = 2
+    IN_STRING = 3
+    
+    current_state = DEFAULT
+    result = []
+    i = 0
+    
+    while i < len(java_code):
+        char = java_code[i]
+        if current_state == DEFAULT:
+            if i < len(java_code) - 1 and char == '/' and java_code[i + 1] == '/':
+                current_state = IN_LINE_COMMENT
+                i += 2
+                continue
+            elif i < len(java_code) - 1 and char == '/' and java_code[i + 1] == '*':
+                current_state = IN_BLOCK_COMMENT
+                i += 2
+                continue
+            elif char == '"' or char == "'":
+                result.append(char)
+                current_state = IN_STRING
+                string_delimiter = char
+                i += 1
+                continue
+            else:
+                result.append(char)
+                i += 1
+                continue
+                
+        elif current_state == IN_LINE_COMMENT:
+            if char == '\n':
+                result.append('\n')  # Keep the newline
+                current_state = DEFAULT
+            i += 1
+            continue
+            
+        elif current_state == IN_BLOCK_COMMENT:
+            if i < len(java_code) - 1 and char == '*' and java_code[i + 1] == '/':
+                current_state = DEFAULT
+                i += 2
+                continue
+            else:
+                i += 1
+                continue
+                
+        elif current_state == IN_STRING:
+            result.append(char)
+            if char == '\\' and i + 1 < len(java_code):
+                # Handle escape sequences in strings
+                result.append(java_code[i + 1])
+                i += 2
+                continue
+            elif char == string_delimiter:
+                current_state = DEFAULT
+            i += 1
+            continue
+    
+    return ''.join(result)
+
 def spiral_token(code):
+    code = remove_java_comments(code)
+    tk = list(javalang.tokenizer.tokenize(code))
+    filtered = [t.value for t in tk if not isinstance(t, javalang.tokenizer.Keyword)]
+    code = ' '.join(filtered)
     for w in ["\n", ";", "[", "]", "}", "{", "(", ")", ",", ".", "\"\""]:
         code = code.replace(w, " ")
     code = re.sub(r'"[^"]+"', " ", code)
@@ -172,6 +238,7 @@ batch = project_title
 for mutant_source in list_mutant:
     batch_vocab = []
     batch = project_title
+    average_dl = []
     for project_name in tqdm(mutant_source):
         if project_name in deprecated_bugs:
             continue
@@ -315,6 +382,7 @@ for mutant_source in list_mutant:
                         batch_vocab.append(spiral_token(testcode))
                         break
         os.chdir(f'd4j_data_fix/{project_name}')
+        
         mutant_embedding = {}
         for mutant_no in mutants:
             if 'snippet' not in mutants[mutant_no].keys():
@@ -329,6 +397,7 @@ for mutant_source in list_mutant:
                 'snippet': mutants[mutant_no]['snippet'],
                 'token': mutants[mutant_no]['token']
             }
+            average_dl.append(len(code_token))
         with open('mutant_data_bm25.pkl', 'wb') as mf:
             pickle.dump(mutant_embedding, mf)
         fix_method_embedding = {}
@@ -344,6 +413,7 @@ for mutant_source in list_mutant:
                 'snippet': m['snippet'],
                 'token': code_token
             }
+            average_dl.append(len(code_token))
         with open('method_data_bm25.pkl', 'wb') as mef:
             pickle.dump(fix_method_embedding, mef)
         test_embedding = {}
@@ -354,6 +424,7 @@ for mutant_source in list_mutant:
                 'snippet': code,
                 'token': code_token
             }
+            average_dl.append(len(code_token))
         with open('test_data_bm25.pkl', 'wb') as tf:
             pickle.dump(test_embedding, tf)
         os.chdir(cur)
@@ -364,7 +435,8 @@ for mutant_source in list_mutant:
     with open(f"vocab/{batch}_vocab.pkl", "wb") as f:
         pickle.dump({
         "bm25": bm25,
-        "vocab_index": vocab_index
+        "vocab_index": vocab_index,
+        "adl": sum(average_dl)/len(average_dl)
     }, f)
     
         

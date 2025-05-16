@@ -7,6 +7,8 @@ import pickle
 import re
 from spiral import ronin
 from rank_bm25 import BM25Okapi
+import javalang
+from collections import Counter
 
 #stem base directory
 cur = "c:/Users/COINSE/Downloads/simfl-extension"
@@ -152,7 +154,73 @@ def format_code(code):
     result = subprocess.run(['astyle'], input=code, capture_output=True, text=True)
     return result.stdout
 
+def remove_java_comments(java_code):
+    DEFAULT = 0
+    IN_LINE_COMMENT = 1
+    IN_BLOCK_COMMENT = 2
+    IN_STRING = 3
+    
+    current_state = DEFAULT
+    result = []
+    i = 0
+    
+    while i < len(java_code):
+        char = java_code[i]
+        if current_state == DEFAULT:
+            if i < len(java_code) - 1 and char == '/' and java_code[i + 1] == '/':
+                current_state = IN_LINE_COMMENT
+                i += 2
+                continue
+            elif i < len(java_code) - 1 and char == '/' and java_code[i + 1] == '*':
+                current_state = IN_BLOCK_COMMENT
+                i += 2
+                continue
+            elif char == '"' or char == "'":
+                result.append(char)
+                current_state = IN_STRING
+                string_delimiter = char
+                i += 1
+                continue
+            else:
+                result.append(char)
+                i += 1
+                continue
+                
+        elif current_state == IN_LINE_COMMENT:
+            if char == '\n':
+                result.append('\n')  # Keep the newline
+                current_state = DEFAULT
+            i += 1
+            continue
+            
+        elif current_state == IN_BLOCK_COMMENT:
+            if i < len(java_code) - 1 and char == '*' and java_code[i + 1] == '/':
+                current_state = DEFAULT
+                i += 2
+                continue
+            else:
+                i += 1
+                continue
+                
+        elif current_state == IN_STRING:
+            result.append(char)
+            if char == '\\' and i + 1 < len(java_code):
+                # Handle escape sequences in strings
+                result.append(java_code[i + 1])
+                i += 2
+                continue
+            elif char == string_delimiter:
+                current_state = DEFAULT
+            i += 1
+            continue
+    
+    return ''.join(result)
+
 def spiral_token(code):
+    code = remove_java_comments(code)
+    tk = list(javalang.tokenizer.tokenize(code))
+    filtered = [t.value for t in tk if not isinstance(t, javalang.tokenizer.Keyword)]
+    code = ' '.join(filtered)
     for w in ["\n", ";", "[", "]", "}", "{", "(", ")", ",", ".", "\"\""]:
         code = code.replace(w, " ")
     code = re.sub(r'"[^"]+"', " ", code)
@@ -164,12 +232,27 @@ def spiral_token(code):
     code = ronin.split(code)
     return code
 
-def bm25_vector(tokenized_query, bm25, vocab_index):
-    vec = np.zeros(len(vocab_index))
-    for token in tokenized_query:
+#def bm25_vector(tokenized_query, bm25, vocab_index):
+#    vec = np.zeros(len(vocab_index), dtype=np.float32)
+#    for token in tokenized_query:
+#        if token in vocab_index:
+#            idx = vocab_index[token]
+#            vec[idx] = bm25.idf.get(token, 0.0)
+#    return vec
+
+def bm25_vector(tokenized_query, bm25, vocab_index, k1=1.5, b=0.75, avgdl=None):
+    vec = np.zeros(len(vocab_index), dtype=np.float32)
+    tf_counter = Counter(tokenized_query)
+    doc_length = len(tokenized_query)
+
+    for token, freq in tf_counter.items():
         if token in vocab_index:
             idx = vocab_index[token]
-            vec[idx] = bm25.idf.get(token, 0.0)
+            idf = bm25.idf.get(token, 0.0)
+            tf = freq
+            # Apply BM25 formula
+            score = idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_length / avgdl))))
+            vec[idx] = score
     return vec
 
 deprecated_bugs = ['Math_6', 'Math_38', 'Lang_2', 'Time_21']
@@ -189,6 +272,7 @@ for i in range(len(list_mutant)):
         data = pickle.load(vf)
         bm25 = data["bm25"]
         vocab_index = data["vocab_index"]
+        adl = data['adl']
     for project_name in tqdm(mutant_source):
         if project_name in deprecated_bugs:
             continue
@@ -207,7 +291,7 @@ for i in range(len(list_mutant)):
                 if 'snippet' not in mutants[mutant_no].keys():
                     continue
                 code_token = mutants[mutant_no]['token']
-                embedding = bm25_vector(code_token, bm25, vocab_index)
+                embedding = bm25_vector(code_token, bm25, vocab_index, avgdl=adl)
                 tag = 'b' if mutants[mutant_no]['killer'] else 'nb'
                 mutant_embedding[mutant_no] = {
                     'method_name': mutants[mutant_no]['method_name'],
@@ -223,7 +307,7 @@ for i in range(len(list_mutant)):
             fix_method_embedding = {}
             for method_no in method:
                 code_token = method[method_no]['token']
-                embedding = bm25_vector(code_token, bm25, vocab_index)
+                embedding = bm25_vector(code_token, bm25, vocab_index, avgdl=adl)
                 fix_method_embedding[method_no] = {
                     'method_name' : method[method_no]['method_name'],
                     'killer' : [],
@@ -237,7 +321,7 @@ for i in range(len(list_mutant)):
             test_embedding = {}
             for t in test:
                 code_token = test[t]['token']
-                embedding = bm25_vector(code_token, bm25, vocab_index)
+                embedding = bm25_vector(code_token, bm25, vocab_index, avgdl=adl)
                 test_embedding[t] = {
                     'embedding': embedding,
                     'snippet': test[t]['snippet'],
@@ -315,7 +399,7 @@ for i in range(len(list_mutant)):
         for method_signature in COVERED_METHODS_CODING:
             code = COVERED_METHODS_CODING[method_signature]
             code_token = spiral_token(code)
-            embedding = bm25_vector(code_token, bm25, vocab_index)
+            embedding = bm25_vector(code_token, bm25, vocab_index, avgdl=adl)
             covered_method_embedding[method_signature] = {
                 'embedding': embedding
             }
@@ -325,7 +409,7 @@ for i in range(len(list_mutant)):
         for test in FAILING_TESTS_CODING:
             code = FAILING_TESTS_CODING[test]
             code_token = spiral_token(code)
-            embedding = bm25_vector(code_token, bm25, vocab_index)
+            embedding = bm25_vector(code_token, bm25, vocab_index, avgdl=adl)
             failing_test_embedding[test] = {
                 'embedding': embedding
             }
